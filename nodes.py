@@ -307,8 +307,20 @@ def download_model_if_needed(model_id: str, qwen_root: str) -> str:
     target_dir = os.path.join(qwen_root, folder_name)
     
     if os.path.exists(target_dir) and os.path.isdir(target_dir):
-        # Model already exists
-        return target_dir
+        # 针对重复下载的关键修复：验证权重文件是否存在
+        weight_files = ["model.safetensors", "model.bin", "pytorch_model.bin"]
+        found_weights = any(os.path.exists(os.path.join(target_dir, f)) for f in weight_files)
+        
+        # 如果是分片模型，检查 index.json
+        index_files = ["model.safetensors.index.json", "pytorch_model.bin.index.json"]
+        found_index = any(os.path.exists(os.path.join(target_dir, i)) for i in index_files)
+
+        if found_weights or found_index:
+            # Model exists and looks complete
+            return target_dir
+        else:
+            print(f"⚠️ [Qwen3-TTS] Directory '{folder_name}' exists but weights are missing. Triggering repair download...")
+            # Fall through to snapshot_download
     
     print(f"\n📥 [Qwen3-TTS] Downloading {model_id}...")
     try:
@@ -811,13 +823,21 @@ class VoiceCloneNode:
             else:
                 raise RuntimeError("Either 'ref_audio' or 'voice_clone_prompt' must be provided")
 
+            # Robustness fix: Fallback to x_vector_only if ref_text is missing to avoid crash
+            actual_x_vector = x_vector_only
+            final_ref_text = ref_text if ref_text and ref_text.strip() else None
+            
+            if ref_audio_param is not None and not final_ref_text and not actual_x_vector:
+                print("⚠️ [Qwen3-TTS] 'ref_text' is empty. Automatically switching to x_vector_only mode.")
+                actual_x_vector = True
+
             wavs, sr = model.generate_voice_clone(
                 text=target_text,
                 language=mapped_lang,
                 ref_audio=ref_audio_param,
-                ref_text=ref_text if ref_text and ref_text.strip() else None,
+                ref_text=final_ref_text,
                 voice_clone_prompt=voice_clone_prompt_param,
-                x_vector_only_mode=x_vector_only,
+                x_vector_only_mode=actual_x_vector,
                 max_new_tokens=max_new_tokens,
                 top_p=top_p,
                 top_k=top_k,
@@ -998,10 +1018,18 @@ class VoiceClonePromptNode:
         vcn = VoiceCloneNode()
         audio_tuple = vcn._audio_tensor_to_tuple(ref_audio)
 
+        # Robustness fix: Fallback to x_vector_only if ref_text is missing to avoid crash
+        actual_x_vector = x_vector_only
+        final_ref_text = ref_text if ref_text and ref_text.strip() else None
+        
+        if not final_ref_text and not actual_x_vector:
+            print("⚠️ [Qwen3-TTS] 'ref_text' is empty. Automatically switching to x_vector_only mode.")
+            actual_x_vector = True
+
         prompt_items = model.create_voice_clone_prompt(
             ref_audio=audio_tuple,
-            ref_text=ref_text if ref_text and ref_text.strip() else None,
-            x_vector_only_mode=x_vector_only,
+            ref_text=final_ref_text,
+            x_vector_only_mode=actual_x_vector,
         )
 
         pbar.update_absolute(3, 3, None)
